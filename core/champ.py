@@ -357,12 +357,13 @@ def apriori_02b_polynomial(text02, apriori):
     return _xml(root)
 
 
-def _resample_grid(out, inp, degree, span):
-    return ET.fromstring(f"""<program comment="{out} (uniform {settings.DYN_SAMPLING}-s grid, gaps up to 30 s filled)">
+def _resample_grid(out, inp, degree, span, max_gap=None):
+    max_gap = settings.DYN_MAX_GAP if max_gap is None else max_gap          # CHANGED 2026-10-11: gap limit argument
+    return ET.fromstring(f"""<program comment="{out} (uniform {settings.DYN_SAMPLING}-s grid, grid steps up to {max_gap} s filled)">
 <InstrumentResample>
 <outputfileInstrument>{out}</outputfileInstrument>
 <inputfileInstrument>{inp}</inputfileInstrument>
-<method><fillGapsLeastSquaresPolynomialFit><polynomialDegree>{degree}</polynomialDegree><maxDataGap>{settings.DYN_MAX_GAP}</maxDataGap><maxDataSpan>{span}</maxDataSpan><margin>1e-5</margin></fillGapsLeastSquaresPolynomialFit></method>
+<method><fillGapsLeastSquaresPolynomialFit><polynomialDegree>{degree}</polynomialDegree><maxDataGap>{max_gap}</maxDataGap><maxDataSpan>{span}</maxDataSpan><margin>1e-5</margin></fillGapsLeastSquaresPolynomialFit></method>
 <timeSeries><uniformSampling><timeStart>loopTime</timeStart><timeEnd>loopTimeEnd</timeEnd><sampling>{settings.DYN_SAMPLING}/86400</sampling></uniformSampling></timeSeries>
 </InstrumentResample>
 </program>""")
@@ -408,7 +409,7 @@ def apriori_02b_dynamic(var_text, text02, original_resample, tug_sync, apriori, 
 <OrbitAddVelocityAndAcceleration><outputfileOrbit>{orbit_grid}</outputfileOrbit><inputfileOrbit>{orbit_grid}</inputfileOrbit><polynomialDegree>{settings.VELOCITY_DEGREE}</polynomialDegree></OrbitAddVelocityAndAcceleration>
 </program>"""),
         _resample_grid(star_grid, star, 1, 20),
-        ET.fromstring(f"""<program comment="arcs: new arc at gaps of more than 30 s missing data, at most 24 h, at least {settings.DYN_MIN_ARC_EPOCHS} epochs">
+        ET.fromstring(f"""<program comment="arcs: new arc at every gap left in the grid, at most 24 h, at least {settings.DYN_MIN_ARC_EPOCHS} epochs">
 <InstrumentSynchronize>
 <data><outputfileInstrument>{orbit_grid}</outputfileInstrument><inputfileInstrument>{orbit_grid}</inputfileInstrument></data>
 <data><outputfileInstrument>{star_grid}</outputfileInstrument><inputfileInstrument>{star_grid}</inputfileInstrument></data>
@@ -500,10 +501,11 @@ def rd_variational_04(var_text, text02, tug_resample, tug_sync, apriori, star, r
     """Script 04: TU Graz reduced-dynamic 03groopsVariational.xml with the kinematic orbit as a priori orbit.
     Force models, stochastic pulses (20 min) and iterations of TU Graz unchanged. Per day:
       1. FileCreateDirectories (TU Graz)                 data/<day>/champReducedDynamic
-      2. InstrumentResample      kinematic positions -> uniform 10-s grid; gaps up to 30 s missing data filled
-                                 (fillGapsLeastSquaresPolynomialFit, same settings as the dynamic a priori option)
+      2. InstrumentResample      kinematic positions -> uniform 10-s grid; gaps up to 5 min missing data filled
+                                 (fillGapsLeastSquaresPolynomialFit, degree 11, 15 min of positions on each side;
+                                 CHANGED 2026-10-11, user decision; before: 30 s, degree 5, 60 s)
       3. OrbitAddVelocityAndAcceleration  velocities of the grid orbit (drag force needs the velocity)
-      4. InstrumentResample      attitude of the kinematic run -> same grid
+      4. InstrumentResample      attitude of the kinematic run -> same grid, same gap limit (linear)
       5. InstrumentSynchronize   grid orbit + attitude: new arc at every remaining gap (GROOPS integrator needs equally
                                  spaced epochs within an arc, preprocessingVariationalEquation.cpp: deltaT =
                                  T/(epochCount-1)); kinematic positions + their 3x3 covariances split into the same arcs
@@ -535,12 +537,14 @@ def rd_variational_04(var_text, text02, tug_resample, tug_sync, apriori, star, r
     rd_apriori, rd_star, rd_receiver = _rd_path(apriori), _rd_path(star), _rd_path(receiver)
 
     new = [
-        _resample_grid(orbit_grid, kin_pos, settings.DYN_FILL_DEGREE, settings.DYN_FILL_SPAN),
+        _resample_grid(orbit_grid, kin_pos, settings.RD_FILL_DEGREE, settings.RD_FILL_SPAN,      # CHANGED 2026-10-11:
+                       settings.RD_MAX_GAP),                                                     # bridge <= 5 min
         ET.fromstring(f"""<program comment="{orbit_grid} (velocities)">
 <OrbitAddVelocityAndAcceleration><outputfileOrbit>{orbit_grid}</outputfileOrbit><inputfileOrbit>{orbit_grid}</inputfileOrbit><polynomialDegree>{settings.VELOCITY_DEGREE}</polynomialDegree></OrbitAddVelocityAndAcceleration>
 </program>"""),
-        _resample_grid(star_grid, star, 1, 20),
-        ET.fromstring(f"""<program comment="arcs: new arc at gaps of more than 30 s missing data, at most 24 h, at least {settings.DYN_MIN_ARC_EPOCHS} epochs">
+        _resample_grid(star_grid, star, settings.RD_STAR_FILL_DEGREE, settings.RD_STAR_FILL_SPAN,   # CHANGED
+                       settings.RD_MAX_GAP),                                                     # 2026-10-11
+        ET.fromstring(f"""<program comment="arcs: new arc at every gap left in the grid, at most 24 h, at least {settings.DYN_MIN_ARC_EPOCHS} epochs">
 <InstrumentSynchronize>
 <data><outputfileInstrument>{orbit_grid}</outputfileInstrument><inputfileInstrument>{orbit_grid}</inputfileInstrument></data>
 <data><outputfileInstrument>{star_grid}</outputfileInstrument><inputfileInstrument>{star_grid}</inputfileInstrument></data>

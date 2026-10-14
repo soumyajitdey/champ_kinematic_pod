@@ -45,6 +45,19 @@ def arc_starts(path):                                                   # NEW: a
     return np.array(starts[1:])                                         # NEW
 
 
+def arc_spans(path):                                                    # NEW 2026-10-11: arc diagnostic
+    """(start, end, number of epochs) of every non-empty arc in a GROOPS text instrument file; times in MJD."""
+    with open(path) as f:
+        lines = f.readlines()
+    spans, i = [], 5
+    while i < len(lines) and lines[i].strip():
+        n = int(lines[i])
+        if n:
+            spans.append((float(lines[i + 1].split()[0]), float(lines[i + n].split()[0]), n))
+        i += 1 + n
+    return spans
+
+
 def read_orbit(path):
     """Return t [MJD], pos [m] (N,3), vel [m/s] (N,3; zeros in kinematic orbits)."""
     kind, d = read_instrument(path)

@@ -43,6 +43,9 @@ and the SLR data are downloaded only for the validation in steps 9-10, never use
          Steps 9-10 = run_validation.py (also runs alone on a finished run folder)
                  |
  STEP 11 report.txt: settings, check numbers, comparison, exact files used, limitations
+
+ After steps 9-10, before the report (NEW 2026-10-13): Earth-fixed file per day, GROOPS script 06 + Python
+ (core/ecef_terms.py). A failure there is written to the report and stops the run only after the report is written.
 ```
 
 ## Run (Ubuntu / WSL, inside this folder)
@@ -74,12 +77,48 @@ Everything else is downloaded by the script (GFZ ISDC, TU Graz server). Existing
 `work/results/CHAMP_<start-orbit>_<products>_<YYYYmmdd_HHMMSS>/` (new folder every run, nothing overwritten):
 - `output/<day>/champ_orbit_<day>.txt` — kinematic orbit, one file per day, and its 3x3 covariances
 - `output/<day>/reducedDynamic/champ_orbit_<day>.txt` — reduced-dynamic orbit (positions + velocities, 10 s), per day
+- `final/<day>/champ_orbit_reducedDynamic_<day>.txt` — **final product** (NEW 2026-10-12): the reduced-dynamic orbit
+  without the first and last 3 h of the whole period (end effects; `FINAL_TRIM_HOURS` in `core/settings.py`). Written
+  after all calculations; epoch lines and arcs copied unchanged. The validation (plots, tables) reads the
+  reduced-dynamic orbit from here. The kinematic orbit and GROOPS's files in `output/` are not trimmed.
+- `final/<day>/champ_ecef_<day>.txt` — **Earth-fixed file** (NEW 2026-10-13), same epochs and arcs as the final
+  orbit: MJD (GPS) | x y z [m] | vx vy vz [m/s] | ax ay az [m/s^2] | U_grav [m^2/s^2] | lat lon [deg] alt [km] (WGS84). See "Earth-fixed file" below.
+- `ecef/` — intermediate GROOPS files of script 06; `06groopsEcefTerms.xml` — the executed script
 - `validation/kinematic_minus_TUG_*.png`, `validation/reducedDynamic_minus_TUG_*.png` — differences vs both TU Graz
   orbits, radial / along-track / cross-track (4 plots); in the reducedDynamic plots, dashed lines mark the start of each reduced-dynamic arc
 - `report.txt` — check numbers, RMS tables, TU Graz scenario zip checksums, **exact files used**, limitations
 - `validation/slr_residuals.png`, SLR tables in `report.txt` — SLR residuals of the four orbits
 - `log/` — GROOPS log of each script; the executed XML scripts are in the run folder
 - `data/<day>/champReducedDynamic/` — intermediate CHAMP files of steps 7-8 (nothing of steps 3-6 is overwritten)
+
+## Earth-fixed file (NEW 2026-10-13, user decisions: Earth-fixed frame, all terms in the same frame)
+
+`final/<day>/champ_ecef_<day>.txt` (GROOPS instrument text layout, type MISCVALUES with 13 data columns; arc blocks as in
+the final orbit file, so the same reader works). The CRF files in `final/` are unchanged.
+
+| column | content | how |
+|---|---|---|
+| 0 | MJD, GPS time | as in the final orbit file |
+| 1-3 | position x y z [m], TRF | `Orbit2EarthFixedOrbit` |
+| 4-6 | velocity [m/s], TRF | same program: v = R v - omega x r (velocity in the rotating frame) |
+| 7-9 | acceleration SRP + ERP + 3BP [m/s^2], TRF | `SimulateAccelerometer` (satellite frame) -> `InstrumentRotate` with the star camera (-> CRF) -> `InstrumentRotate` with `InstrumentEarthRotation` (-> TRF, pure rotation) |
+| 10 | U_grav [m^2/s^2] = -V | Python, GOCO06s file and maximum degree read from script 04 (120), at the TRF positions; static field, no tides |
+| 11-13 | latitude [deg], longitude [deg], altitude [km] | Python, WGS84 ellipsoid (a = 6378137 m, 1/f = 298.257223563), from the TRF positions; geodetic latitude, ellipsoidal height |
+
+- SRP + ERP = the `radiationPressure` block of script 04 (solar flux 1367, conical eclipse, CERES albedo and longwave
+  climatology, factors 1.0; includes the satellite's own thermal radiation). 3BP = the `astronomicalTide` block of script 04
+  with `usePlanets` 0 (Sun and Moon; `useEarth` has no effect with Earth-centred ephemerides, tidesAstronomical.cpp).
+  Satellite model, ephemerides and `earthRotation` are copied from the executed script 04, not typed again.
+- One frame: all three rotations CRF -> TRF use the same `earthRotation` block as the POD. `Orbit2EarthFixedOrbit` would add
+  a CM -> CE degree-1 correction by default; it is set to zero (`factor` 0), so the origin stays the centre of mass.
+- Acceleration: pure rotation. `Orbit2EarthFixedOrbit` is not used for it (with an acceleration present it also subtracts
+  centrifugal and Coriolis terms, orbit2EarthFixedOrbit.cpp).
+- `InstrumentRotate`: `inverseRotate` 0 rotates with the stored rotation as it is (satellite -> CRF for the star camera
+  file, CRF -> TRF for the Earth rotation file); the default 1 does the opposite. Checked here (see Tests).
+- GROOPS forces are computed per epoch, so script 06 works on one arc; the arcs of the final orbit are restored in Python.
+  Epochs without an attitude epoch are dropped by InstrumentSynchronize; the report lists "N of M" epochs per day.
+- The report adds one line per day: GROOPS Earth-fixed position / velocity minus astropy GCRS -> ITRS (same epochs).
+  Not a pass/fail test; the two use different EOP handling (astropy: IERS tables, no sub-daily EOP model).
 
 ## Per-step checks (run stops with a message if a number is zero)
 
@@ -142,13 +181,20 @@ epochs with TU Graz's original resampling of script 02.
    observations; the fitted orbit of the last fit is the a priori orbit.
 6. **repro3 products only from your local zips or daily files** (no CDDIS / remote attempts), as confirmed.
 7. (removed 2026-10-11: joining of daily files no longer exists; TU Graz daily loop.)
-8. **Reduced-dynamic: arcs (2026-10-11).** GROOPS integrates the variational equations with a constant step per
-   arc (`preprocessingVariationalEquation.cpp`: `deltaT = T/(epochCount-1)`), so an arc must have equally spaced
-   epochs. GRACE-FO's GNV1B orbit is continuous; the kinematic orbit has gaps and outliers. Therefore (same rule
-   as the dynamic a priori option): kinematic positions -> 10-s grid, gaps of up to 30 s missing data filled by a
-   degree-5 least squares polynomial (60 s each side), new arc at longer gaps, arcs of fewer than 10 epochs
-   rejected. The grid orbit is only the starting orbit of the integration; the fit itself uses the original
-   kinematic positions.
+8. **Reduced-dynamic: arcs (2026-10-11; gap limit CHANGED 2026-10-11 late, user decision).** GROOPS integrates the
+   variational equations with a constant step per arc (`preprocessingVariationalEquation.cpp`:
+   `deltaT = T/(epochCount-1)`), so the starting orbit of each arc must have equally spaced epochs. Kinematic
+   positions -> 10-s grid; gaps of up to 5 min missing data are bridged in this STARTING orbit by a degree-11 least
+   squares polynomial through 15 min of kinematic positions on each side (GROOPS fillGapsLeastSquaresPolynomialFit);
+   attitude linearly. Longer gaps start a new arc; arcs end at midnight (TU Graz daily loop), so no arc is longer
+   than 24 h (user limit: 30 h). A dynamic orbit is continuous across data gaps (Wu et al. 1991; Selvan et al. 2023),
+   so short gaps are no reason for a new arc. The fit itself uses only real kinematic positions; filled values are
+   never data. Test on a simulated orbit (2 days, 2 cm noise, gaps 25 s/2/4.5/5/6/15 min, three 1-m outliers): gaps
+   up to 5 min bridged, 6 and 15 min started new arcs (3 arcs per day); fitted orbit vs truth 3D RMS 0.3 cm, max
+   1.0 cm, max 0.6 cm inside bridged gaps. The report lists arcs per day, their lengths and the gaps between them
+   (check 8). Overlapping arcs across midnight were not adopted (decision 2026-10-11): GROOPS reads one constant
+   GPS signal-bias set per run (`gnssParametrizationSignalBiases.cpp`), so neighbouring-day hours would use wrong
+   biases.
 9. **Reduced-dynamic: weights (2026-10-11).** The orbit fit (step 7) weights each kinematic position with its 3x3
    covariance from step 6 (GROOPS `inputfileCovariancePodEpoch`, documented input of
    `PreprocessingVariationalEquationOrbitFit`); outliers are downweighted by GROOPS's Huber method (built in).
@@ -230,6 +276,23 @@ to SLR data.
   differences (2 cm noise -> 2.1 cm; 1 cm -> 0.9 cm). Not tested here: real EDC files, real station files, TU Graz's
   PPP settings (server not reachable from the build machine).
 
+## Tests (2026-10-13, Earth-fixed file)
+
+- Done here (GROOPS 2025-11-15, synthetic test orbit, 2 days, `earthRotation` gmst because the EOP file is not here, constant
+  satellite-frame acceleration instead of SimulateAccelerometer):
+  - `InstrumentRotate` (inverseRotate 0) with the star camera file = quaternion matrix R a (difference 0 to 1e-21 m/s^2);
+    with the Earth rotation file = `Orbit2EarthFixedOrbit` position (2e-9 m).
+  - Whole chain acceleration: Python R_z(theta) R_q a minus GROOPS output: 8e-21 m/s^2.
+  - `Orbit2EarthFixedOrbit` with the default gravityfield and with factor 0 gave identical positions here.
+  - U_grav (test field J2..J6): independent Legendre sum minus Python: 1.5e-8 m^2/s^2. Earlier test of `U_grav_full`: 7e-8 J/kg
+    against a reference implementation.
+  - Output file: arcs identical to the final orbit file, times identical, read back by GROOPS.
+  - XML of script 06 generated from the executed script 04 (cmp/.../04groopsVariational.xml); the blocks copied from it are
+    valid in `forces` of PreprocessingVariationalEquation, the same type as in SimulateAccelerometer.
+- NOT tested here: `SimulateAccelerometer` itself (needs the JPL DE432, EOP, CERES and CHAMP satellite model files, which
+  are only in your groopsData folder), the values of SRP / ERP / 3BP, the real `earthRotation` (EOP file), GOCO06s itself,
+  the astropy comparison on real data.
+
 ## Tests (2026-10-11, reduced-dynamic version)
 
 - Not run with GROOPS here (user decision 2026-10-11).
@@ -266,6 +329,9 @@ to SLR data.
 ## Sources
 
 - GROOPS: Mayer-Gürr et al. 2021, Comput. Geosci. 155, 104864; source release 2025-11-15.
+- Earth-fixed file (NEW 2026-10-13): GROOPS source programs orbit2EarthFixedOrbit.cpp, instrumentRotate.cpp,
+  instrumentEarthRotation.cpp, simulateAccelerometer.cpp, tidesAstronomical.cpp (release 2025-11-15); GOCO06s: Kvas et al.
+  2021, Earth Syst. Sci. Data 13:99-118 (degree 120 as in the TU Graz force model).
 - Kinematic PPP with GROOPS: Zehentner & Mayer-Gürr 2016, J. Geod. 90:275–286; Suesser-Rechberger et al. 2022,
   Adv. Space Res. 69(10):3559–3570. PPP: Zumberge et al. 1997, J. Geophys. Res. 102(B3):5005–5017.
 - Dynamical smoothing of code single-point solutions as a priori orbit: Montenbruck et al. 2005,

@@ -99,6 +99,7 @@ def compare(orbit_sets, out_dir):
         arcs = (np.concatenate([np.r_[x[0][:1], arc_starts(f)] for x, f in zip(parts, orbit_files)])  # NEW 2026-10-11:
                 if name == "reduced-dynamic" else np.array([]))     # NEW: start of every reduced-dynamic arc [MJD]
         t = np.concatenate([x[0] for x in parts])
+        arcs = arcs[arcs > t.min()] if len(arcs) else arcs  # CHANGED 2026-10-12: first epoch (e.g. trimmed start) is no arc start
         p = np.concatenate([x[1] for x in parts])
         w = name.replace(" ", "-").split("-")
         tag = w[0] + "".join(x.capitalize() for x in w[1:])            # "reduced-dynamic" -> "reducedDynamic"

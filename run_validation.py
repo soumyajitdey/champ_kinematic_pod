@@ -3,6 +3,7 @@
   python3 run_validation.py --run-dir work/results/<run folder> [--groops-bin /path/to/groops]
 
   9  comparison of our kinematic and reduced-dynamic orbit with TU Graz's kinematic and reduced-dynamic orbits
+     (reduced-dynamic = final product from <run folder>/final/, first and last 3 h of the period removed)
  10  SLR validation: measured minus computed laser range for all four orbits (core/slr.py)
 
 Standalone: results go to a NEW folder <run folder>/validation_<YYYYmmdd_HHMMSS>/ (earlier results are kept),
@@ -15,7 +16,7 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from core import champ, download, groops_exe, settings, slr
+from core import champ, download, final, groops_exe, settings, slr   # CHANGED 2026-10-12: final
 from core import validate as validate_mod
 from core.groops_io import arc_starts, read_orbit
 
@@ -54,6 +55,12 @@ def orbit_sets(run_dir):
         out[k] = files
     if "kinematic" not in out:
         sys.exit("[validation] no kinematic orbit files in the run folder; nothing to validate")
+    if "reduced-dynamic" in out:                                  # NEW 2026-10-12: validate the final product
+        finals = [final.final_file(run_dir, d) for d in settings.DAYS]
+        if not any(f.is_file() for f in finals):                  # run made before 2026-10-12: create final/
+            for l in final.make_final(run_dir, out["reduced-dynamic"])[0]:
+                print(l)
+        out["reduced-dynamic"] = [f for f in finals if f.is_file()]   # trimmed orbit from final/
     return out
 
 

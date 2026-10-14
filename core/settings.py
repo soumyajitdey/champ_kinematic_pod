@@ -66,6 +66,15 @@ DYN_MIN_ARC_EPOCHS = 10      # Claude's choice (implementation): the orbit integ
                              #     at least 8 epochs per arc; shorter data islands get no a priori position
 SPP_SIGMA_MM = 3000          # [mm] uncertainty of each rough position in the dynamic fit (3 m)
 
+# ---------------- reduced-dynamic POD, step 7: starting orbit of the integration (NEW 2026-10-11, user decision) -------
+# Gaps in the kinematic positions of up to 5 min missing data are bridged in the STARTING orbit of the integration
+# (no new arc there); longer gaps start a new arc. Only the starting orbit is filled; the fit uses real positions only.
+RD_MAX_GAP = 315             # [s] grid steps up to 310 s (= up to 5 min missing data at 10 s) are filled; +5 s margin
+RD_FILL_DEGREE = 11          # least squares polynomial degree (test on simulated orbit: max 0.02 m for a 5-min gap)
+RD_FILL_SPAN = 900           # [s] kinematic positions used on each side of a gap (15 min)
+RD_STAR_FILL_DEGREE = 1      # attitude: linear between the nearest epochs on each side (degree of TU Graz's 02)
+RD_STAR_FILL_SPAN = 20       # [s]
+
 # ---------------- SLR validation (NEW 2026-10-11, confirmed items 4-16, A, B; validation only) ----------------
 # SLR data are used ONLY in the validation step (step 10); no processing step reads them.
 SLR_NP_URL = "https://edc.dgfi.tum.de/pub/slr/data/npt/champ/{y}/champ.{ymd}"   # ILRS EDC, CSTG normal points
@@ -77,3 +86,12 @@ SLR_ELEVATION_CUTOFF = 5       # [deg] GROOPS default (item 12)
 SLR_INTERPOLATION_DEGREE = 7   # orbit interpolation to the SLR epochs: 8 nearest orbit points (GROOPS default)
 SLR_SCREEN_RESIDUAL = 0.150    # [m] screened table: |residual| > 15 cm removed (Strugarek et al. 2022, GPS Solut 26:104)
 SLR_SCREEN_STATION_STD = 0.050 # [m] screened table: station-days with std > 5 cm removed (Strugarek et al. 2022)
+
+# ---------------- time scales (NEW 2026-10-13) ----------------
+TT_MINUS_GPS = 51.184        # [s] TT - GPS = (TT - TAI 32.184 s, IERS Conventions 2010) + (TAI - GPS 19 s, IS-GPS-200)
+
+# ---------------- final product (NEW 2026-10-12, user decision) ----------------
+# The reduced-dynamic orbit is the final product. After ALL calculations, its first and last FINAL_TRIM_HOURS of the
+# whole processed period are removed (end effects); the trimmed orbit is written to <run folder>/final/ and the
+# validation reads it from there. GROOPS's own files in output/ are not changed. The kinematic orbit is not trimmed.
+FINAL_TRIM_HOURS = 3

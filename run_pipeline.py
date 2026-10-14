@@ -25,6 +25,10 @@ Execution order (confirmed item A):
  10 SLR validation: measured minus computed laser range for our and TU Graz's orbits (NEW 2026-10-11, core/slr.py)
     Steps 9-10 = run_validation.py, which can also be run alone on a finished run folder.
  11 report: settings, check numbers, comparison, exact files used, limitations
+ Final product (NEW 2026-10-12): reduced-dynamic orbit without the first and last 3 h of the period, in final/
+ (written after all calculations, before steps 9-10; the validation reads it from there).
+ Earth-fixed file per day (NEW 2026-10-13): final/<day>/champ_ecef_<day>.txt = position, velocity, summed SRP+ERP+3BP
+ acceleration and GOCO06s gravitational potential in one Earth-fixed frame (core/ecef_terms.py, GROOPS script 06).
 Each run: work/results/CHAMP_<start-orbit>_<products>_<YYYYmmdd_HHMMSS>/ (nothing is overwritten).
 """
 import argparse
@@ -33,6 +37,8 @@ import time
 from pathlib import Path
 
 from core import champ, download, files_used, gnss_products, groops_exe, run_groops, settings, spp
+from core import final                                            # NEW 2026-10-12: final product
+from core import ecef_terms                                        # NEW 2026-10-13: Earth-fixed file per day
 from core.groops_io import read_orbit, read_instrument
 
 LIMITATIONS = """Known limitations (accepted 2026-10-10, tester review):
@@ -54,7 +60,10 @@ LIMITATIONS = """Known limitations (accepted 2026-10-10, tester review):
 12. SLR validation (NEW 2026-10-11): CHAMP was tracked in short passes by few stations, so two days give few normal
     points; the retroreflector position is the nominal design value (250 mm from the centre of mass to nadir); ILRS
     station range/time biases are not applied (determined with passive satellites only), so station biases remain
-    in the residuals; SLR measures only the line-of-sight component of the orbit error."""
+    in the residuals; SLR measures only the line-of-sight component of the orbit error.
+13. Earth-fixed file (NEW 2026-10-13): SRP/ERP use the climatological CERES files of the POD force model (not the
+    measured radiation of the day); 3BP = Sun and Moon only; U_grav is the static GOCO06s field (no tides); the
+    SimulateAccelerometer step and the astropy comparison were not run on real data when the code was written."""
 
 
 def stop(msg):
@@ -119,6 +128,19 @@ def check_apriori(run_dir, report, no, template, what):
         if n == 0:
             stop(f"no epoch with {what} on {day}; see the log files in {run_dir / 'log'}")
     report.append(f"[check {no}] all days: {total}")
+
+
+def arc_diagnostic(files, report):                                       # NEW 2026-10-11 (decision: arc breaks)
+    """Per day: number of reduced-dynamic arcs, their lengths and the gaps between them [min]."""
+    from core.groops_io import arc_spans
+    for day, f in zip(settings.DAYS, files):
+        sp = arc_spans(f)
+        lengths = [(e - s) * 1440 for s, e, n in sp]
+        gaps = [(sp[k + 1][0] - sp[k][1]) * 1440 for k in range(len(sp) - 1)]
+        report.append(f"[check 8] {day}: reduced-dynamic arcs: {len(sp)}; lengths [min]: "
+                      + ", ".join(f"{x:.0f}" for x in lengths)
+                      + ("; gaps between arcs [min]: " + ", ".join(f"{x:.1f}" for x in gaps) if gaps else ""))
+        print(report[-1])
 
 
 def check_orbit(run_dir, report, no, template, what):
@@ -192,23 +214,41 @@ def main():
                           "reduced-dynamic a priori position (fitted orbit, after TU Graz synchronization)")
         elif s == order[5]:                                      # NEW 2026-10-11
             orbit_sets["reduced-dynamic"] = check_orbit(run_dir, report, 8, rd_orbit, "reduced-dynamic positions")
+            arc_diagnostic(orbit_sets["reduced-dynamic"], report)       # NEW 2026-10-11
     (run_dir / "RUN_OK").write_text(f"start-orbit={a.start_orbit}\nproducts={a.products}\n"
                                     f"start={settings.START}\nend={settings.END}\n")      # CHANGED 2026-10-11: period
+
+    # ---------- final product (NEW 2026-10-12): trimmed reduced-dynamic orbit in final/ ----------
+    fin_files = []                                                                         # NEW 2026-10-13
+    if "reduced-dynamic" in orbit_sets:
+        fin_lines, fin_files = final.make_final(run_dir, orbit_sets["reduced-dynamic"])    # CHANGED 2026-10-13: keep file list
+        report += [""] + fin_lines                                                         # CHANGED 2026-10-13
+        print("\n".join(report[-len(settings.DAYS) - 1:]))
 
     # ---------- steps 9-10 (run_validation.py, NEW 2026-10-11) ----------
     lines, ref_files, counts = run_validation.validate(run_dir, run_dir / "validation", exe, data_dir)
     report += [""] + lines
 
+    # ---------- Earth-fixed file (NEW 2026-10-13): after the validation, so that a failure here cannot stop steps 9-10 ----------
+    ecef_failed = None
+    try:
+        ecef_lines = ecef_terms.make_ecef(run_dir, fin_files, scripts[order[4]], data_dir, exe, glob_)
+    except SystemExit as e:                                  # message of the failing step goes to the report; the report is still written
+        ecef_failed = str(e)
+        ecef_lines = [f"[ecef] FAILED: {ecef_failed}"]
+    report += [""] + ecef_lines
+    print("\n".join(ecef_lines))
+
     # ---------- step 11 ----------
     report += ["", "=== files used ===", "Inputs from outside the run (copies in the run folder come from "
                f"{champ_dir} and {igs_dir}):"]
     external, internal = set(), set()
-    for s in order:
+    for s in order + ([ecef_terms.SCRIPT] if (run_dir / ecef_terms.SCRIPT).is_file() else []):   # CHANGED 2026-10-13: + script 06
         for f in files_used.script_inputs(run_dir / s, run_dir, {"groopsDataDir": str(Path(data_dir).resolve()), **glob_}):
             rel = Path(f).resolve()
             in_run = str(rel).startswith(str(run_dir.resolve()))
             parts = rel.relative_to(run_dir.resolve()).parts if in_run else ()
-            produced = in_run and (parts[0] in ("data", "checks", "output") or rel.name.startswith("SPP_"))
+            produced = in_run and (parts[0] in ("data", "checks", "output", "ecef", "final") or rel.name.startswith("SPP_"))   # CHANGED 2026-10-13: + ecef, final
             (internal if produced else external).add(f"{s}: {files_used.describe(f)}")
     for f in sorted(set(RTKLIB_FILES)):
         external.add(f"RTKLIB: {files_used.describe(f)}")
@@ -221,6 +261,8 @@ def main():
     print("\n".join(l for l in report if l.startswith("[check") or l[:10] in settings.DAYS or l.startswith("all days")
                     or "===" in l))
     print(f"\n[done] report: {run_dir / 'report.txt'}")
+    if ecef_failed:                                          # NEW 2026-10-13
+        stop(f"Earth-fixed file (script 06) failed: {ecef_failed}")
     if not counts or any(n == 0 for n in counts.values()):
         stop("at least one validation check is zero (see report.txt); the orbits themselves are in "
              f"{run_dir / 'output'}")
