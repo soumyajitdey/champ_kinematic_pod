@@ -28,7 +28,8 @@ Execution order (confirmed item A):
  Final product (NEW 2026-10-12): reduced-dynamic orbit without the first and last 3 h of the period, in final/
  (written after all calculations, before steps 9-10; the validation reads it from there).
  Earth-fixed file per day (NEW 2026-10-13): final/<day>/champ_ecef_<day>.txt = position, velocity, summed SRP+ERP+3BP
- acceleration and GOCO06s gravitational potential in one Earth-fixed frame (core/ecef_terms.py, GROOPS script 06).
+ acceleration, GOCO06s gravitational potential, lat/lon/alt and ram area A_ram (NEW 2026-10-14) in one Earth-fixed frame
+ (core/ecef_terms.py, GROOPS script 06).
 Each run: work/results/CHAMP_<start-orbit>_<products>_<YYYYmmdd_HHMMSS>/ (nothing is overwritten).
 """
 import argparse

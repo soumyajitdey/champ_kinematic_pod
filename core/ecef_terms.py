@@ -4,7 +4,7 @@ and Earth's gravitational potential, all in ONE Earth-fixed frame.
 Written after the final product (core/final.py); the CRF files in final/ stay unchanged.
 
   final/<day>/champ_ecef_<day>.txt   one row per epoch (same epochs and arcs as the final orbit):
-      MJD (GPS time) | x y z [m] | vx vy vz [m/s] | ax ay az [m/s^2] | U_grav [m^2/s^2] | lat lon [deg] alt [km]
+      MJD (GPS time) | x y z [m] | vx vy vz [m/s] | ax ay az [m/s^2] | U_grav [m^2/s^2] | lat lon [deg] alt [km] | A_ram [m^2]
 
 Why one frame: every rotation CRF -> TRF uses the SAME earthRotation block that the POD uses (copied from the
 executed script 04), so the orbit, the accelerations and the potential positions cannot disagree.
@@ -26,7 +26,13 @@ executed script 04), so the orbit, the accelerations and the potential positions
     7  U_grav from the GOCO06s file named in script 04 (same file and maximum degree as the POD), evaluated at the TRF
        positions of step 6; sign convention U = -V (V = GM/r * sum ...), static field (no tides).
     8  geodetic latitude, longitude, altitude (WGS84) from the TRF positions (NEW 2026-10-13, user decision).
-    9  file with the arcs of the final orbit.
+    9  ram area A_ram [m^2] (NEW 2026-10-14, user decision): projected area of the surfaces of the satellite model of
+       script 04 (champ_satelliteModel.xml) onto the flow direction. Flow direction = TRF velocity (air co-rotates, no
+       wind) rotated into the satellite frame with the star camera and Earth rotation files of step 1 and 2 (text
+       copies written by InstrumentConcatenate). Plates (type 0, 3): area*max(0, n.vhat); sphere (type 1): area; the
+       same rule as GROOPS miscAccelerationsAtmosphericDrag with a constant drag coefficient (cylinder: not
+       implemented there either, error here). No shadowing between surfaces. C_D and mass are NOT in the file.
+   10  file with the arcs of the final orbit.
 """
 import copy
 import re
@@ -105,6 +111,18 @@ def script_text(s04_text, days):
 {rot}
 <timeSeries><instrument><inputfileInstrument>{f("orbitCrf")}.dat</inputfileInstrument></instrument></timeSeries>
 </InstrumentEarthRotation>
+</program>''',
+            f'''<program comment="{d}: text copy of the star camera file (for the ram area in Python)">
+<InstrumentConcatenate>
+<outputfile>{f("starCamera")}.txt</outputfile>
+<inputfile>{f("starCamera")}.dat</inputfile>
+</InstrumentConcatenate>
+</program>''',
+            f'''<program comment="{d}: text copy of the Earth rotation file (for the ram area in Python)">
+<InstrumentConcatenate>
+<outputfile>{f("earthRotation")}.txt</outputfile>
+<inputfile>{f("earthRotation")}.dat</inputfile>
+</InstrumentConcatenate>
 </program>''',
             f'''<program comment="{d}: SRP + ERP (radiationPressure of the POD) + 3BP (Sun, Moon); satellite frame">
 <SimulateAccelerometer>
@@ -220,7 +238,8 @@ def U_grav_full(x, y, z, gfc):
 HEADER = ("Time [MJD, GPS]          data0: pos x [m] TRF      data1: pos y [m] TRF      data2: pos z [m] TRF      "
           "data3: vel x [m/s] TRF    data4: vel y [m/s] TRF    data5: vel z [m/s] TRF    "
           "data6: acc x [m/s^2] TRF  data7: acc y [m/s^2] TRF  data8: acc z [m/s^2] TRF  data9: U_grav [m^2/s^2]  "
-          "data10: lat [deg] WGS84  data11: lon [deg] WGS84  data12: alt [km] WGS84   ")
+          "data10: lat [deg] WGS84  data11: lon [deg] WGS84  data12: alt [km] WGS84   "
+          "data13: A_ram [m^2]       ")                                          # NEW 2026-10-14
 
 
 def geodetic_wgs84(x, y, z):                                                # NEW 2026-10-13
@@ -239,6 +258,56 @@ def geodetic_wgs84(x, y, z):                                                # NE
         h = np.where(np.abs(lat) < np.pi/4, p/np.cos(lat) - N, z/np.sin(lat) - N*(1 - e2))
     return np.degrees(lat), np.degrees(np.arctan2(y, x)), h/1000.0
 
+def quat2mat(q):                                                            # NEW 2026-10-14
+    """GROOPS Rotary3d from quaternions (q0 = scalar part, then x, y, z; GROOPS rotary3d.cpp); q: (n,4) -> (n,3,3)."""
+    q = q/np.linalg.norm(q, axis=1)[:, None]
+    w, x, y, z = q.T
+    R = np.empty((len(q), 3, 3))
+    R[:, 0, 0] = x*x - y*y - z*z + w*w; R[:, 0, 1] = 2*(x*y - z*w);         R[:, 0, 2] = 2*(x*z + y*w)
+    R[:, 1, 0] = 2*(x*y + z*w);         R[:, 1, 1] = y*y - x*x - z*z + w*w; R[:, 1, 2] = 2*(y*z - x*w)
+    R[:, 2, 0] = 2*(x*z - y*w);         R[:, 2, 1] = 2*(y*z + x*w);         R[:, 2, 2] = z*z - y*y - x*x + w*w
+    return R
+
+
+def read_satellite_model(path):                                             # NEW 2026-10-14
+    """GROOPS satelliteModel XML (fileSatelliteModel.h) -> name, mass [kg], [(type, normal (satellite frame), area [m^2])]."""
+    sat = ET.parse(path).getroot().find("satellite")
+    surfaces = [(int(s.find("type").text), np.array([float(s.find(f"normal/{c}").text) for c in "xyz"]),
+                 float(s.find("area").text)) for s in sat.findall("surface")]
+    return sat.find("satelliteName").text, float(sat.find("mass").text), surfaces
+
+
+def _rows_at(t_ref, t, tol=1e-9):                                           # NEW 2026-10-14
+    """Index of the epoch of t (sorted, MJD) that belongs to every epoch of t_ref; must agree within tol [d]."""
+    i = np.clip(np.searchsorted(t, t_ref), 1, len(t) - 1)
+    i = i - (np.abs(t[i - 1] - t_ref) < np.abs(t[i] - t_ref))
+    if np.abs(t[i] - t_ref).max() > tol:
+        raise SystemExit("[ecef] epochs of the star camera / Earth rotation file do not match the orbit epochs")
+    return i
+
+
+def ram_area(run_dir, day, t, vel, surfaces):                               # NEW 2026-10-14
+    """Ram area [m^2] at epochs t [MJD], Earth-fixed velocity vel (N,3) [m/s]; see the module docstring, step 9."""
+    run_dir = Path(run_dir)
+    ks, ds = read_instrument(run_dir / FOLDER / f"starCamera_{day}.txt")
+    kr, dr = read_instrument(run_dir / FOLDER / f"earthRotation_{day}.txt")
+    if ks != "STARCAMERA" or kr != "STARCAMERA":
+        raise SystemExit(f"[ecef] {day}: unexpected file types {ks}, {kr} (star camera / Earth rotation)")
+    Rs = quat2mat(ds[_rows_at(t, ds[:, 0]), 1:5])                           # satellite -> CRF
+    Re = quat2mat(dr[_rows_at(t, dr[:, 0]), 1:5])                           # CRF -> TRF
+    M = np.einsum("nij,njk->nik", Re, Rs)                                   # satellite -> TRF
+    v_sat = np.einsum("nji,nj->ni", M, vel)                                 # TRF -> satellite frame
+    vhat = v_sat/np.linalg.norm(v_sat, axis=1)[:, None]                     # direction of motion relative to the air
+    A = np.zeros(len(t))
+    for typ, n, area in surfaces:
+        if typ in (0, 3):                                                   # plate, GRACE shadow plate
+            A += area*np.maximum(0.0, vhat @ n)
+        elif typ == 1:                                                      # sphere
+            A += area
+        else:
+            raise SystemExit(f"[ecef] {day}: surface type {typ} (cylinder) not implemented, as in GROOPS drag")
+    return A
+
 
 def _row_strings(path):
     """Raw epoch lines of a GROOPS text instrument file (arc headers skipped)."""
@@ -251,7 +320,7 @@ def _row_strings(path):
     return out
 
 
-def write_ecef(run_dir, day, gfc, tol=1e-9):
+def write_ecef(run_dir, day, gfc, surfaces, tol=1e-9):   # CHANGED 2026-10-14: + surfaces
     """Read the TRF files of GROOPS for one day, add U_grav, write final/<day>/champ_ecef_<day>.txt.
     Returns (report line, output file)."""
     run_dir = Path(run_dir)
@@ -269,6 +338,7 @@ def write_ecef(run_dir, day, gfc, tol=1e-9):
         raise SystemExit(f"[ecef] {day}: non-finite values in the GROOPS output")
     U = U_grav_full(pos[:, 0], pos[:, 1], pos[:, 2], gfc)
     lat, lon, alt = geodetic_wgs84(pos[:, 0], pos[:, 1], pos[:, 2])        # NEW 2026-10-13
+    A_ram = ram_area(run_dir, day, t, vel, surfaces)                       # NEW 2026-10-14
     # arcs of the final orbit: epoch belongs to the arc that contains its time
     spans = arc_spans(fin_f)
     first = np.array([a for a, b, n in spans]); last = np.array([b for a, b, n in spans])
@@ -278,13 +348,13 @@ def write_ecef(run_dir, day, gfc, tol=1e-9):
     # time string of every epoch is the one GROOPS wrote in the TRF orbit file; the numbers are in the TRF files
     rows = _row_strings(orb_f)
     n_fin = len(_row_strings(fin_f))
-    out = ["groops instrument version=20200123", "# MISCVALUES", f"{13:11d}{len(np.unique(arc)):11d}",   # CHANGED: 13 data columns
+    out = ["groops instrument version=20200123", "# MISCVALUES", f"{14:11d}{len(np.unique(arc)):11d}",   # CHANGED 2026-10-14: 14 data columns
            "# " + HEADER, "# " + "=" * (len(HEADER) + 1)]
     for a in np.unique(arc):
         idx = np.where(arc == a)[0]
         out.append(f"{len(idx):11d}")
         for k in idx:
-            vals = np.concatenate([pos[k], vel[k], acc[k], [U[k], lat[k], lon[k], alt[k]]])   # CHANGED: + lat lon alt
+            vals = np.concatenate([pos[k], vel[k], acc[k], [U[k], lat[k], lon[k], alt[k], A_ram[k]]])   # CHANGED 2026-10-14: + A_ram
             out.append(rows[k].split()[0] + "".join(f" {v: .18e}" for v in vals))
     dst = ecef_file(run_dir, day)
     dst.write_text("\n".join(out) + "\n")
@@ -335,9 +405,13 @@ def make_ecef(run_dir, final_files, s04_text, data_dir, exe, glob_):
     (run_dir / SCRIPT).write_text(script_text(s04_text, days))
     run_groops.run_scripts(run_dir, [SCRIPT], data_dir, exe, glob_)
     gfc = read_gfc(gfc_path, b["gfc_degree"])
+    sat_path = Path(b["sat"].replace("{groopsDataDir}", str(Path(data_dir).resolve())))   # NEW 2026-10-14
+    sat_name, sat_mass, surfaces = read_satellite_model(sat_path)                          # NEW 2026-10-14
     lines = ["[ecef] Earth-fixed file per day: position, velocity, SRP+ERP+3BP acceleration, U_grav "
              f"(GOCO06s degree {b['gfc_degree']}, {gfc_path.name})"]
+    lines.append(f"[ecef] ram area from {sat_path.name}: satellite {sat_name}, mass {sat_mass:.2f} kg, "
+                 f"{len(surfaces)} surfaces (C_D and mass are not in the file)")             # NEW 2026-10-14
     for d in days:
-        lines.append(write_ecef(run_dir, d, gfc)[0])
+        lines.append(write_ecef(run_dir, d, gfc, surfaces)[0])                               # CHANGED 2026-10-14: + surfaces
     lines += [compare_with_astropy(run_dir, d) for d in days]
     return lines

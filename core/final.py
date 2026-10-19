@@ -22,7 +22,9 @@ def _trim(src, dst, t0, t1):
     head, arcs, i = lines[:5], [], 5
     while i < len(lines) and lines[i].strip():
         n = int(lines[i])
-        keep = [l for l in lines[i + 1:i + 1 + n] if t0 <= float(l.split()[0]) < t1]
+        # CHANGED 2026-10-14 (user): 3 h trim disabled (original line kept below, commented out)
+        # keep = [l for l in lines[i + 1:i + 1 + n] if t0 <= float(l.split()[0]) < t1]
+        keep = lines[i + 1:i + 1 + n]  # CHANGED: keep all epochs
         if keep:
             arcs.append(keep)
         i += 1 + n

@@ -13,7 +13,7 @@ DOWNLOADS = WORK / "downloads"
 
 # ---------------- period (confirmed: 2010-05-01 .. 2010-05-02, both days included) ----------------
 # Processed with TU Graz's daily loop (CHANGED 2026-10-11): each day uses only its own input files.
-START, END = "2010-05-01", "2010-05-02"
+START, END = "2003-11-19", "2003-11-23"
 DAYS = [str(date.fromisoformat(START) + timedelta(days=k))
         for k in range((date.fromisoformat(END) - date.fromisoformat(START)).days + 1)]
 MJD0 = date(1858, 11, 17)
