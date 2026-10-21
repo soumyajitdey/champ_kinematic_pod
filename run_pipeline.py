@@ -40,6 +40,7 @@ from pathlib import Path
 from core import champ, download, files_used, gnss_products, groops_exe, run_groops, settings, spp
 from core import final                                            # NEW 2026-10-12: final product
 from core import ecef_terms                                        # NEW 2026-10-13: Earth-fixed file per day
+from core import rinex_filter                                      # NEW 2026-10-18: removes impossible code observations
 from core.groops_io import read_orbit, read_instrument
 
 LIMITATIONS = """Known limitations (accepted 2026-10-10, tester review):
@@ -191,6 +192,19 @@ def main():
         z, when, sha = download.scenario_zip_info(n)
         report.append(f"  {z}\n    downloaded {when}, SHA-256 {sha}")
     report.append("")
+
+    # ---------- step 1b: NEW 2026-10-18 filter bad code observations in the run copy of the RINEX files ----------
+    print("[1b] filtering impossible code observations (C1/P1/P2 outside "
+          f"{rinex_filter.RANGE_MIN:.1e}..{rinex_filter.RANGE_MAX:.1e} m) in the run copy of the RINEX files")
+    flt = ["RINEX filter: satellite records with C1/P1/P2 outside "
+           f"{rinex_filter.RANGE_MIN:.1e}..{rinex_filter.RANGE_MAX:.1e} m are blanked (run copy only; work/inputs is unchanged)"]
+    for day in settings.DAYS:
+        removed = rinex_filter.filter_rinex(run_dir / "champ" / f"CH-OG-1-SST_{day}.rnx")
+        flt.append(f"[check 1b] {day}: {len(removed)} satellite records blanked")
+        flt += [f"    {t}  {sat}  {v}" for t, sat, v in removed]
+    print("\n".join(flt))
+    (run_dir / "checks" / "rinex_filter.txt").write_text("\n".join(flt) + "\n")
+    report += flt
 
     # ---------- step 2 ----------
     print("[2] RTKLIB rough positions")
