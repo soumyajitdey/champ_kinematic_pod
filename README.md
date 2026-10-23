@@ -74,7 +74,7 @@ Everything else is downloaded by the script (GFZ ISDC, TU Graz server). Existing
 
 ## Output
 
-`work/results/CHAMP_<start-orbit>_<products>_<YYYYmmdd_HHMMSS>/` (new folder every run, nothing overwritten):
+`work/results/CHAMP_<start>_<end>_<receiver interval>_<products>_<start-orbit>_<YYYYmmdd_HHMMSS>/` (new folder every run, nothing overwritten; the interval is read from the INTERVAL line of the RINEX header, "NAs" if that line is missing):
 - `output/<day>/champ_orbit_<day>.txt` — kinematic orbit, one file per day, and its 3x3 covariances
 - `output/<day>/reducedDynamic/champ_orbit_<day>.txt` — reduced-dynamic orbit (positions + velocities, 10 s), per day
 - `final/<day>/champ_orbit_reducedDynamic_<day>.txt` — **final product** (NEW 2026-10-12): the reduced-dynamic orbit

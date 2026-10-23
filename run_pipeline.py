@@ -30,7 +30,8 @@ Execution order (confirmed item A):
  Earth-fixed file per day (NEW 2026-10-13): final/<day>/champ_ecef_<day>.txt = position, velocity, summed SRP+ERP+3BP
  acceleration, GOCO06s gravitational potential, lat/lon/alt and ram area A_ram (NEW 2026-10-14) in one Earth-fixed frame
  (core/ecef_terms.py, GROOPS script 06).
-Each run: work/results/CHAMP_<start-orbit>_<products>_<YYYYmmdd_HHMMSS>/ (nothing is overwritten).
+Each run: work/results/CHAMP_<start>_<end>_<receiver interval>_<products>_<start-orbit>_<YYYYmmdd_HHMMSS>/
+(for example CHAMP_2003-11-19_2003-11-23_10s_repro3_polynomial_20261023_031500; nothing is overwritten).
 """
 import argparse
 import sys
@@ -89,6 +90,20 @@ def step1_inputs(products):
     tdirs = champ.template_dirs()
     data_dir = download.get_groops_data(tdirs, champ.EXTRA_DATA)
     return champ_dir, igs_dir, data_dir
+
+
+def rinex_interval_s(rnx):                                                                # NEW 2026-10-23
+    """Observation interval [s] from the INTERVAL line of the RINEX 2 header, or None if the line is missing."""
+    try:
+        with open(rnx, errors="replace") as f:
+            for line in f:
+                if "END OF HEADER" in line:
+                    break
+                if line[60:].strip() == "INTERVAL":
+                    return float(line[:60].split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def step2_rtklib(run_dir, products):
@@ -176,7 +191,11 @@ def main():
     exe = groops_exe.get_groops(a.groops_bin)
     scripts, (apriori, star, kin_orbit, rd_orbit) = champ.scripts(a.start_orbit, a.products)
 
-    results = settings.RESULTS / f"{settings.NAME}_{a.start_orbit}_{a.products}_{time.strftime('%Y%m%d_%H%M%S')}"
+    # CHANGED 2026-10-23: the folder name carries the inputs that change between runs: period, receiver interval, products
+    iv = rinex_interval_s(Path(champ_dir) / f"CH-OG-1-SST_{settings.DAYS[0]}.rnx")        # NEW 2026-10-23
+    cadence = f"{iv:g}s" if iv else "NAs"                                                 # NEW 2026-10-23
+    results = settings.RESULTS / (f"{settings.NAME}_{settings.START}_{settings.END}_{cadence}_{a.products}_"
+                                  f"{a.start_orbit}_{time.strftime('%Y%m%d_%H%M%S')}")
     files = dict(scripts)
     files.update({"02observationTypes.champ.txt": champ.OBS_TYPES, "champ": champ_dir, "igs": igs_dir})
     run_dir = run_groops.prepare(results, files)
